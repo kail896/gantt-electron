@@ -3,14 +3,14 @@
    ============================================================ */
 
 // ===== Data =====
-const APP_VERSION = '1.0.010';
+const APP_VERSION = '1.0.009';
 let tasks = [];
 let nextId = 1;
 let zoomLevel = 'week';
 let selectedTaskId = null;
 let dragState = null;
 const DAY_MS = 86400000;
-let columnWidths = { name: 200, start: 95, end: 95, duration: 55, owner: 60, plan: 70, deps: 120 };
+let columnWidths = { name: 200, start: 95, end: 95, duration: 55, owner: 60, plan: 130 };
 let colResizeState = null;
 let sortState = { key: null, asc: true };
 
@@ -106,41 +106,6 @@ function escHtml(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
-function parseAndSetDeps(taskId, str) {
-  const task = getTaskById(taskId);
-  if (!task) return;
-  if (!str || !str.trim()) {
-    pushUndoState();
-    task.deps = [];
-    markDirty();
-    fullRender();
-    return;
-  }
-  const parts = str.split(',').map(s => s.trim()).filter(Boolean);
-  const parsed = [];
-  for (const part of parts) {
-    const m = part.match(/^(\d+)\s+(FS|SS|FF|SF)$/);
-    if (!m) { updateStatus('格式错误，应为 "id FS, id SS" 格式'); return; }
-    const id = parseInt(m[1]);
-    if (id === taskId) { updateStatus('任务不能依赖自身'); return; }
-    if (!getTaskById(id)) { updateStatus('任务 #' + id + ' 不存在'); return; }
-    if (parsed.some(d => d.id === id)) { updateStatus('重复的前置任务 #' + id); return; }
-    parsed.push({ id, type: m[2] });
-  }
-  // Rollback on cycle detection
-  const oldDeps = task.deps || [];
-  pushUndoState();
-  task.deps = parsed;
-  const sorted = topologicalSort();
-  if (!sorted) {
-    task.deps = oldDeps;
-    updateStatus('检测到循环依赖，已还原');
-    return;
-  }
-  markDirty();
-  fullRender();
-}
-
 // ===== Sample Data =====
 function initSampleData() {
   const today = new Date(); today.setHours(0, 0, 0, 0);
@@ -159,10 +124,6 @@ function initSampleData() {
     { id: nextId++, text: '外墙粉刷', start_date: addDays(rs, 35), end_date: addDays(rs, 42), duration: 7, owner: '周工', progress: 20, actual_progress: 15, parent: p5, sortorder: 1, open: true },
     { id: nextId++, text: '内墙粉刷', start_date: addDays(rs, 40), end_date: re, duration: daysBetween(addDays(rs, 40), re), owner: '周工', progress: 0, actual_progress: 0, parent: p5, sortorder: 2, open: true }
   ];
-  // Add sample dependency: 一层混凝土浇筑 FS → 一层钢筋绑扎
-  const gj = tasks.find(t => t.text === '一层钢筋绑扎');
-  const ht = tasks.find(t => t.text === '一层混凝土浇筑');
-  if (gj && ht) ht.deps = [{ id: gj.id, type: 'FS' }];
 }
 
 // ===== Data Operations =====
@@ -174,16 +135,20 @@ function getDescendants(pid) {
   return r;
 }
 function getDisplayTasks() {
-  const visible = [];
-  const roots = tasks.filter(t => t.parent === null).sort((a, b) => a.sortorder - b.sortorder);
-  const stack = [...roots.reverse()];
-  while (stack.length) {
-    const t = stack.pop();
-    visible.push(t);
-    if (t.open) { const ch = getChildren(t.id); for (let i = ch.length - 1; i >= 0; i--) stack.push(ch[i]); }
+  if (!sortState.key) {
+    // Tree-order (default)
+    const visible = [];
+    const roots = tasks.filter(t => t.parent === null).sort((a, b) => a.sortorder - b.sortorder);
+    const stack = [...roots.reverse()];
+    while (stack.length) {
+      const t = stack.pop();
+      visible.push(t);
+      if (t.open) { const ch = getChildren(t.id); for (let i = ch.length - 1; i >= 0; i--) stack.push(ch[i]); }
+    }
+    return visible;
   }
-  if (!sortState.key) return visible;
-  const sorted = [...tasks].sort((a, b) => {
+  // Sort only root (parent) tasks, keep children in tree order within their parent
+  const roots = tasks.filter(t => t.parent === null).sort((a, b) => {
     let va, vb;
     switch (sortState.key) {
       case 'name': va = a.text || ''; vb = b.text || ''; break;
@@ -192,7 +157,6 @@ function getDisplayTasks() {
       case 'duration': va = a.duration || 0; vb = b.duration || 0; break;
       case 'owner': va = a.owner || ''; vb = b.owner || ''; break;
       case 'plan': va = a.progress || 0; vb = b.progress || 0; break;
-      case 'deps': va = (a.deps || []).map(d => d.id + d.type).join(','); vb = (b.deps || []).map(d => d.id + d.type).join(','); break;
       default: return 0;
     }
     if (typeof va === 'string') {
@@ -203,7 +167,20 @@ function getDisplayTasks() {
     if (va > vb) return sortState.asc ? 1 : -1;
     return 0;
   });
-  return sorted;
+  // Build display list: sorted roots + their children in tree order
+  const result = [];
+  for (const r of roots) {
+    result.push(r);
+    if (r.open) {
+      const stack = [...getChildren(r.id).reverse()];
+      while (stack.length) {
+        const t = stack.pop();
+        result.push(t);
+        if (t.open) { const ch = getChildren(t.id); for (let i = ch.length - 1; i >= 0; i--) stack.push(ch[i]); }
+      }
+    }
+  }
+  return result;
 }
 function getTaskDepth(id) { let d = 0, t = getTaskById(id); while (t && t.parent) { d++; t = getTaskById(t.parent); } return d; }
 function hasChildren(id) { return tasks.some(t => t.parent === id); }
@@ -214,11 +191,15 @@ function moveTaskBefore(draggedId, targetId) {
   if (!dragged || !target || draggedId === targetId) return;
   pushUndoState();
   const oldParent = dragged.parent;
-  const newParent = target.parent;
+  // If target is a root task: keep dragged's parent (reorder within current group)
+  // If target is a child: adopt target's parent (allows reparenting to other groups)
+  const newParent = (target.parent === null) ? (dragged.parent !== null ? dragged.parent : null) : target.parent;
   const descIds = new Set([draggedId, ...getDescendants(draggedId).map(d => d.id)]);
+  if (descIds.has(newParent)) return;
   dragged.parent = newParent;
   const siblings = tasks.filter(t => t.parent === newParent && !descIds.has(t.id)).sort((a, b) => a.sortorder - b.sortorder);
-  const idx = siblings.indexOf(target);
+  // Insert before target if they share the new parent, otherwise append
+  const idx = (target.parent === newParent) ? siblings.indexOf(target) : -1;
   siblings.splice(idx < 0 ? siblings.length : idx, 0, dragged);
   siblings.forEach((t, i) => t.sortorder = i + 1);
   if (oldParent !== null && oldParent !== newParent) {
@@ -244,98 +225,6 @@ function recalcParentProgress() {
   }
 }
 
-// ===== CPM Schedule Engine =====
-function dateToDayIndex(d) { return Math.floor(d.getTime() / DAY_MS); }
-function dayIndexToDate(idx) { return new Date(idx * DAY_MS); }
-
-function getSuccessors(taskId) {
-  return tasks.filter(t => t.deps && t.deps.some(d => d.id === taskId));
-}
-
-function topologicalSort() {
-  const inDegree = {}, adj = {};
-  for (const t of tasks) { inDegree[t.id] = 0; adj[t.id] = []; }
-  for (const t of tasks) {
-    if (t.deps) {
-      for (const dep of t.deps) {
-        if (getTaskById(dep.id)) {
-          adj[dep.id].push(t.id);
-          inDegree[t.id]++;
-        }
-      }
-    }
-  }
-  const queue = tasks.filter(t => inDegree[t.id] === 0).map(t => t.id);
-  const result = [];
-  while (queue.length) {
-    const id = queue.shift();
-    result.push(getTaskById(id));
-    for (const succId of adj[id]) {
-      inDegree[succId]--;
-      if (inDegree[succId] === 0) queue.push(succId);
-    }
-  }
-  return result.length === tasks.length ? result : null;
-}
-
-function recalcSchedule() {
-  const sorted = topologicalSort();
-  if (!sorted) { updateStatus('检测到循环依赖，调度计算中止'); return; }
-  // Forward pass
-  for (const task of sorted) {
-    if (!task.deps || !task.deps.length) {
-      task._es = dateToDayIndex(task.start_date);
-      task._ef = dateToDayIndex(task.end_date);
-    } else {
-      let es = -Infinity;
-      for (const dep of task.deps) {
-        const pred = getTaskById(dep.id);
-        if (!pred) continue;
-        switch (dep.type) {
-          case 'FS': es = Math.max(es, pred._ef + 1); break;
-          case 'SS': es = Math.max(es, pred._es); break;
-          case 'FF': es = Math.max(es, pred._ef - task.duration + 1); break;
-          case 'SF': es = Math.max(es, pred._es - task.duration + 1); break;
-        }
-      }
-      task._es = es;
-      task._ef = es + task.duration - 1;
-    }
-  }
-  // Backward pass
-  const projectEnd = sorted.reduce((max, t) => Math.max(max, t._ef), -Infinity);
-  if (projectEnd === -Infinity) return;
-  for (let i = sorted.length - 1; i >= 0; i--) {
-    const task = sorted[i];
-    const succs = getSuccessors(task.id);
-    let lfMin = projectEnd, lsMin = projectEnd - task.duration + 1;
-    for (const succ of succs) {
-      const dep = (succ.deps || []).find(d => d.id === task.id);
-      if (!dep) continue;
-      switch (dep.type) {
-        case 'FS': lfMin = Math.min(lfMin, succ._ls - 1); break;
-        case 'SS': lsMin = Math.min(lsMin, succ._ls); break;
-        case 'FF': lfMin = Math.min(lfMin, succ._lf); break;
-        case 'SF': lsMin = Math.min(lsMin, succ._lf); break;
-      }
-    }
-    task._ls = Math.min(lsMin, lfMin - task.duration + 1);
-    task._lf = task._ls + task.duration - 1;
-  }
-  // Float & critical
-  for (const task of tasks) {
-    task._float = task._ls - task._es;
-    task._critical = task._float === 0;
-  }
-  // Update dates for tasks with deps
-  for (const task of tasks) {
-    if (task.deps && task.deps.length > 0) {
-      task.start_date = dayIndexToDate(task._es);
-      task.end_date = dayIndexToDate(task._ef);
-    }
-  }
-}
-
 // ===== Serialization =====
 function serializeTasks() {
   return {
@@ -353,7 +242,7 @@ function serializeTasks() {
 function deserializeData(data) {
   nextId = data.nextId || 1;
   zoomLevel = data.zoomLevel || 'week';
-  columnWidths = { name: 200, start: 95, end: 95, duration: 55, owner: 60, plan: 70, deps: 120, ...(data.columnWidths || {}) };
+  columnWidths = { name: 200, start: 95, end: 95, duration: 55, owner: 60, plan: 130, ...(data.columnWidths || {}) };
   tasks = (data.tasks || []).map(t => ({
     ...t,
     start_date: t.start_date ? parseDate(t.start_date) : null,
@@ -512,7 +401,6 @@ const tableColumns = [
   { key: 'duration', label: '工期' },
   { key: 'owner', label: '负责人' },
   { key: 'plan', label: '实际/计划' },
-  { key: 'deps', label: '前置任务' },
 ];
 
 function renderTableStructure() {
@@ -521,17 +409,16 @@ function renderTableStructure() {
   colgroup.innerHTML = '';
   thead.innerHTML = '';
   const tr = document.createElement('tr');
-  const totalPx = tableColumns.reduce((s, c) => s + (columnWidths[c.key] || 200), 0);
   tableColumns.forEach((c, idx) => {
     const col = document.createElement('col');
     col.dataset.colKey = c.key;
-    col.style.width = (columnWidths[c.key] / totalPx * 100) + '%';
+    col.style.width = columnWidths[c.key] + 'px';
     colgroup.appendChild(col);
     const th = document.createElement('th');
     th.dataset.colKey = c.key;
     th.textContent = c.label + (sortState.key === c.key ? (sortState.asc ? ' ▲' : ' ▼') : '');
     th.style.cursor = 'pointer';
-    th.title = '点击排序';
+    th.title = '点击为主任务排序';
     th.onclick = () => {
       if (sortState.key === c.key) {
         if (sortState.asc) sortState = { key: c.key, asc: false };
@@ -542,12 +429,10 @@ function renderTableStructure() {
       fullRender();
     };
     tr.appendChild(th);
-    if (idx < tableColumns.length - 1) {
-      const h = document.createElement('div');
-      h.className = 'col-resize-handle';
-      h.onmousedown = (e) => startColResize(e, c.key);
-      th.appendChild(h);
-    }
+    const h = document.createElement('div');
+    h.className = 'col-resize-handle';
+    h.onmousedown = (e) => startColResize(e, c.key);
+    th.appendChild(h);
   });
   thead.appendChild(tr);
   updateTableWidth();
@@ -555,7 +440,18 @@ function renderTableStructure() {
 
 function updateTableWidth() {
   const table = document.getElementById('taskTable');
-  table.style.width = '100%';
+  const scrollEl = document.querySelector('.table-scroll');
+  const panelWidth = scrollEl ? scrollEl.clientWidth : 460;
+  let total = tableColumns.reduce((s, c) => s + (columnWidths[c.key] || 200), 0);
+  if (total <= 0) return;
+  // Always scale all columns proportionally to fill the panel exactly
+  const scale = panelWidth / total;
+  tableColumns.forEach(c => {
+    columnWidths[c.key] = Math.max(40, Math.round((columnWidths[c.key] || 200) * scale));
+    const col = document.querySelector(`#colgroup col[data-col-key="${c.key}"]`);
+    if (col) col.style.width = columnWidths[c.key] + 'px';
+  });
+  table.style.width = panelWidth + 'px';
 }
 
 // ===== Render: Table =====
@@ -594,7 +490,6 @@ function renderTable() {
     const tdStart = document.createElement('td');
     const si = document.createElement('input');
     si.type = 'date'; si.value = task.start_date ? fmtDate(task.start_date) : '';
-    si.disabled = task.deps && task.deps.length > 0;
     si.onchange = () => { const d = parseDate(si.value); if (d) updateTaskField(task.id, 'start_date', d); };
     si.onclick = e => e.stopPropagation();
     tdStart.appendChild(si);
@@ -604,7 +499,6 @@ function renderTable() {
     const tdEnd = document.createElement('td');
     const ei = document.createElement('input');
     ei.type = 'date'; ei.value = task.end_date ? fmtDate(task.end_date) : '';
-    ei.disabled = task.deps && task.deps.length > 0;
     ei.onchange = () => { const d = parseDate(ei.value); if (d) updateTaskField(task.id, 'end_date', d); };
     ei.onclick = e => e.stopPropagation();
     tdEnd.appendChild(ei);
@@ -637,11 +531,13 @@ function renderTable() {
 
     // Plan progress (editable input + mini bar)
     const tdPlan = document.createElement('td');
-    tdPlan.style.cssText = 'padding:0 4px !important;display:flex;align-items:center;gap:3px;';
+    tdPlan.style.padding = '0 4px';
+    const planFlex = document.createElement('div');
+    planFlex.style.cssText = 'display:flex;align-items:center;gap:3px;';
     const pi = document.createElement('input');
     pi.type = 'number'; pi.min = 0; pi.max = 100;
     pi.value = Math.min(100, Math.max(0, task.progress || 0));
-    pi.style.cssText = 'width:32px;height:20px;padding:0 2px;font-size:11px;text-align:center;border:1px solid transparent;border-radius:3px;outline:none;background:transparent;font-family:inherit;color:inherit;flex:none;';
+    pi.style.cssText = 'width:36px;height:20px;padding:0 2px;font-size:11px;text-align:center;border:1px solid transparent;border-radius:3px;outline:none;background:transparent;font-family:inherit;color:inherit;flex:none;box-sizing:border-box;';
     pi.onfocus = () => { pi.style.borderColor = '#d0d5dd'; pi.style.background = '#fff'; };
     pi.onblur = () => { pi.style.borderColor = 'transparent'; pi.style.background = 'transparent'; };
     pi.onchange = () => updateTaskField(task.id, 'progress', Math.max(0, Math.min(100, +pi.value)));
@@ -652,19 +548,10 @@ function renderTable() {
     const planFill = document.createElement('div');
     planFill.style.cssText = 'height:100%;background:var(--accent-green);border-radius:2px;width:' + planPct + '%;transition:width 0.3s;';
     planBar.appendChild(planFill);
-    tdPlan.appendChild(pi);
-    tdPlan.appendChild(planBar);
+    planFlex.appendChild(pi);
+    planFlex.appendChild(planBar);
+    tdPlan.appendChild(planFlex);
     tr.appendChild(tdPlan);
-
-    // Deps column
-    const tdDeps = document.createElement('td');
-    const depInput = document.createElement('input');
-    depInput.type = 'text'; depInput.placeholder = '无';
-    depInput.value = task.deps && task.deps.length > 0 ? task.deps.map(d => d.id + ' ' + d.type).join(', ') : '';
-    depInput.onchange = () => parseAndSetDeps(task.id, depInput.value);
-    depInput.onclick = e => e.stopPropagation();
-    tdDeps.appendChild(depInput);
-    tr.appendChild(tdDeps);
 
     // Row click: select task
     tr.onmousedown = (e) => {
@@ -673,7 +560,7 @@ function renderTable() {
       document.querySelectorAll('#taskTable tbody tr.selected').forEach(r => r.classList.remove('selected'));
       tr.classList.add('selected');
     };
-    // Drag-and-drop reorder (tree mode only)
+    // Drag-and-drop reorder (only when not sorting)
     tr.draggable = !sortState.key;
     tr.ondragstart = (e) => {
       if (sortState.key) { e.preventDefault(); return; }
@@ -703,11 +590,24 @@ function renderTable() {
 }
 
 // ===== Column Resize =====
+function syncColumnWidths() {
+  const table = document.getElementById('taskTable');
+  if (!table) return;
+  const tableWidth = table.getBoundingClientRect().width;
+  if (tableWidth <= 0) return;
+  const totalPx = tableColumns.reduce((s, c) => s + (columnWidths[c.key] || 0), 0);
+  if (totalPx <= 0) return;
+  // Scale stored widths to actual rendered pixels
+  for (const c of tableColumns) {
+    columnWidths[c.key] = Math.round(columnWidths[c.key] / totalPx * tableWidth);
+  }
+}
+
 function startColResize(e, colKey) {
   e.preventDefault();
+  syncColumnWidths();
   const startX = e.clientX;
-  const startWidth = columnWidths[colKey] || 80;
-  colResizeState = { colKey, startX, startWidth };
+  colResizeState = { colKey, startX, startWidth: columnWidths[colKey] };
   document.body.style.cursor = 'col-resize';
   document.body.style.userSelect = 'none';
   document.addEventListener('mousemove', onColResize);
@@ -718,13 +618,29 @@ function onColResize(e) {
   if (!colResizeState) return;
   const dx = e.clientX - colResizeState.startX;
   const newW = Math.max(40, colResizeState.startWidth + dx);
-  columnWidths[colResizeState.colKey] = newW;
-  // Recalculate all column widths as percentages of the new total
-  const totalPx = tableColumns.reduce((s, c) => s + (columnWidths[c.key] || 200), 0);
-  document.querySelectorAll('#colgroup col').forEach(col => {
-    const key = col.dataset.colKey;
-    if (key) col.style.width = (columnWidths[key] / totalPx * 100) + '%';
+  const key = colResizeState.colKey;
+  const delta = newW - columnWidths[key];
+  if (delta === 0) return;
+
+  columnWidths[key] = newW;
+  // Redistribute delta inversely among other columns to keep total = panel width
+  const otherKeys = tableColumns.map(c => c.key).filter(k => k !== key);
+  const otherTotal = otherKeys.reduce((s, k) => s + (columnWidths[k] || 0), 0);
+  if (otherTotal > 0) {
+    for (const k of otherKeys) {
+      const prop = (columnWidths[k] || 0) / otherTotal;
+      columnWidths[k] = Math.max(40, Math.round((columnWidths[k] || 0) - delta * prop));
+    }
+  }
+  // Update all column widths and table width in one pass
+  const table = document.getElementById('taskTable');
+  let total = 0;
+  tableColumns.forEach(c => {
+    const col = document.querySelector(`#colgroup col[data-col-key="${c.key}"]`);
+    if (col) col.style.width = columnWidths[c.key] + 'px';
+    total += columnWidths[c.key];
   });
+  table.style.width = total + 'px';
 }
 
 function endColResize() {
@@ -733,6 +649,7 @@ function endColResize() {
   document.body.style.userSelect = '';
   document.removeEventListener('mousemove', onColResize);
   document.removeEventListener('mouseup', endColResize);
+  fullRender(); // Re-render to sync everything
 }
 // ===== Render: Timeline =====
 function renderTimeline(units, totalWidth) {
@@ -835,9 +752,9 @@ function renderGantt() {
       wrap.style.cssText = 'left:' + x1 + 'px;width:' + bw + 'px;';
       wrap.dataset.taskId = task.id;
 
-      // Bar: plan progress (green fill, red for critical)
-      const barColor = task._critical ? '#e74c3c' : hasChildren(task.id) ? '#7BB3E0' : '#4A90D9';
-      const planColor = task._critical ? '#c0392b' : '#5CB85C';
+      // Bar: plan progress (green fill)
+      const barColor = hasChildren(task.id) ? '#7BB3E0' : '#4A90D9';
+      const planColor = '#5CB85C';
       const planPct = Math.min(100, Math.max(0, task.progress || 0));
 
       const planFill = document.createElement('div');
@@ -851,19 +768,17 @@ function renderGantt() {
       wrap.appendChild(planFill);
       wrap.appendChild(bt);
 
-      if (!task.deps || task.deps.length === 0) {
-        const lh = document.createElement('div');
-        lh.className = 'gantt-bar-handle left';
-        lh.title = '拖动调整开始日期';
-        lh.onmousedown = (e) => startDrag('resize-left', task.id, e);
-        const rh = document.createElement('div');
-        rh.className = 'gantt-bar-handle right';
-        rh.title = '拖动调整结束日期';
-        rh.onmousedown = (e) => startDrag('resize-right', task.id, e);
-        wrap.appendChild(lh);
-        wrap.appendChild(rh);
-        wrap.onmousedown = (e) => { if (!e.target.closest('.gantt-bar-handle')) startDrag('move', task.id, e); };
-      }
+      const lh = document.createElement('div');
+      lh.className = 'gantt-bar-handle left';
+      lh.title = '拖动调整开始日期';
+      lh.onmousedown = (e) => startDrag('resize-left', task.id, e);
+      const rh = document.createElement('div');
+      rh.className = 'gantt-bar-handle right';
+      rh.title = '拖动调整结束日期';
+      rh.onmousedown = (e) => startDrag('resize-right', task.id, e);
+      wrap.appendChild(lh);
+      wrap.appendChild(rh);
+      wrap.onmousedown = (e) => { if (!e.target.closest('.gantt-bar-handle')) startDrag('move', task.id, e); };
       rd.appendChild(wrap);
     }
     rc.appendChild(rd);
@@ -878,7 +793,6 @@ function renderGantt() {
   }
 
 
-  renderDependencyArrows(rc, range, units, ppd, visibleTasks);
   renderTodayLine(range, units, ppd, rc);
   body.appendChild(rc);
 
@@ -898,64 +812,10 @@ function renderGantt() {
 }
 
 // ===== Dependency Arrows =====
-function renderDependencyArrows(rc, range, units, ppd, visibleTasks) {
-  const svgNS = 'http://www.w3.org/2000/svg';
-  const svg = document.createElementNS(svgNS, 'svg');
-  svg.setAttribute('width', '100%');
-  svg.setAttribute('height', '100%');
-  svg.style.cssText = 'position:absolute;top:0;left:0;pointer-events:none;z-index:1;overflow:visible;';
-  const defs = document.createElementNS(svgNS, 'defs');
-  const marker = document.createElementNS(svgNS, 'marker');
-  marker.setAttribute('id', 'arr');
-  marker.setAttribute('viewBox', '0 0 10 10');
-  marker.setAttribute('refX', '8');
-  marker.setAttribute('refY', '5');
-  marker.setAttribute('markerWidth', '6');
-  marker.setAttribute('markerHeight', '6');
-  marker.setAttribute('orient', 'auto');
-  const arrPath = document.createElementNS(svgNS, 'path');
-  arrPath.setAttribute('d', 'M 0 0 L 10 5 L 0 10 z');
-  arrPath.setAttribute('fill', '#888');
-  marker.appendChild(arrPath);
-  defs.appendChild(marker);
-  svg.appendChild(defs);
-  const ROW_H = 34, SPACER_H = 30, OFFSET = 12;
-  const typeColors = { FS: '#4A90D9', SS: '#5CB85C', FF: '#E8894A', SF: '#e74c3c' };
-  for (const task of visibleTasks) {
-    if (!task.deps) continue;
-    for (const dep of task.deps) {
-      const pred = getTaskById(dep.id);
-      if (!pred) continue;
-      const predIdx = visibleTasks.indexOf(pred);
-      const succIdx = visibleTasks.indexOf(task);
-      if (predIdx === -1 || succIdx === -1) continue;
-      const predRight = dateToPixel(addDays(pred.end_date, 1), range, units, ppd);
-      const predLeft = dateToPixel(pred.start_date, range, units, ppd);
-      const succRight = dateToPixel(addDays(task.end_date, 1), range, units, ppd);
-      const succLeft = dateToPixel(task.start_date, range, units, ppd);
-      const predY = SPACER_H + predIdx * ROW_H + ROW_H / 2;
-      const succY = SPACER_H + succIdx * ROW_H + ROW_H / 2;
-      const startX = (dep.type === 'SS' || dep.type === 'SF') ? predLeft : predRight;
-      const endX = (dep.type === 'FS' || dep.type === 'SS') ? succLeft : succRight;
-      const startOff = (dep.type === 'SS' || dep.type === 'SF') ? -OFFSET : OFFSET;
-      const midX = startX + startOff;
-      const path = document.createElementNS(svgNS, 'path');
-      path.setAttribute('d', 'M ' + startX + ',' + predY + ' L ' + midX + ',' + predY + ' L ' + midX + ',' + succY + ' L ' + endX + ',' + succY);
-      path.setAttribute('stroke', typeColors[dep.type] || '#888');
-      path.setAttribute('stroke-width', '1.5');
-      path.setAttribute('fill', 'none');
-      path.setAttribute('marker-end', 'url(#arr)');
-      svg.appendChild(path);
-    }
-  }
-  rc.appendChild(svg);
-}
-
 // ===== Drag =====
 function startDrag(type, taskId, e) {
   const task = getTaskById(taskId);
   if (!task) return;
-  if (task.deps && task.deps.length > 0) { updateStatus('此任务有前置依赖，无法手动拖动'); return; }
   pushUndoState();
   e.preventDefault();
   const range = getGanttRange(), units = generateTimeUnits(range), ppd = getPixelsPerDay(units);
@@ -1025,6 +885,7 @@ function initResize() {
     if (!isResizing) return;
     const w = Math.max(100, e.clientX);
     panel.style.width = w + 'px';
+    updateTableWidth();
   });
 
   document.addEventListener('mouseup', () => {
@@ -1033,6 +894,7 @@ function initResize() {
       handle.classList.remove('active');
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
+      fullRender(); // Re-render to fill panel with no gaps
     }
   });
 }
@@ -1058,16 +920,15 @@ async function exportToExcel() {
     border: { bottom: { style: 'thin', color: { argb: 'FFD0D5DD' } } }
   };
 
-  const hRow = ws1.addRow(['任务名称', '开始时间', '结束时间', '工期(天)', '负责人', '前置任务', '计划进度(%)', '实际进度(%)', '父任务ID']);
+  const hRow = ws1.addRow(['任务名称', '开始时间', '结束时间', '工期(天)', '负责人', '计划进度(%)', '实际进度(%)', '父任务ID']);
   hRow.eachCell((cell) => { cell.font = hdrStyle.font; cell.fill = hdrStyle.fill; cell.border = hdrStyle.border; cell.alignment = { vertical: 'middle' }; });
 
   for (const t of visibleTasks) {
-    const depsStr = t.deps && t.deps.length > 0 ? t.deps.map(d => d.id + ' ' + d.type).join(', ') : '';
-    const row = ws1.addRow([t.text, t.start_date ? fmtDate(t.start_date) : '', t.end_date ? fmtDate(t.end_date) : '', t.duration || 0, t.owner || '', depsStr, t.progress || 0, t.actual_progress || 0, t.parent || '']);
+    const row = ws1.addRow([t.text, t.start_date ? fmtDate(t.start_date) : '', t.end_date ? fmtDate(t.end_date) : '', t.duration || 0, t.owner || '', t.progress || 0, t.actual_progress || 0, t.parent || '']);
     row.eachCell((cell) => { cell.alignment = { vertical: 'middle' }; });
   }
 
-  const colW = [20, 12, 12, 10, 10, 14, 12, 12, 12];
+  const colW = [20, 12, 12, 10, 10, 12, 12, 12];
   colW.forEach((w, i) => { ws1.getColumn(i + 1).width = w; });
   ws1.views = [{ state: 'frozen', ySplit: 1 }];
 
@@ -1268,14 +1129,12 @@ async function exportToPdf() {
   for (const task of visibleTasks) {
     const indent = '&nbsp;'.repeat(getTaskDepth(task.id) * 4);
     const parent = hasChildren(task.id);
-    const depsStr = task.deps && task.deps.length > 0 ? task.deps.map(d => d.id + ' ' + d.type).join(', ') : '';
     tableRows += `<tr${parent ? ' style="background:#f8f9fa;"' : ''}>
       <td style="padding:3px 8px;font-size:11px;border-bottom:1px solid #eee;${parent ? 'font-weight:600;' : ''}text-align:left;">${indent}${escHtml(task.text)}</td>
       <td style="padding:3px 8px;font-size:11px;border-bottom:1px solid #eee;text-align:center;">${task.start_date ? fmtDate(task.start_date) : ''}</td>
       <td style="padding:3px 8px;font-size:11px;border-bottom:1px solid #eee;text-align:center;">${task.end_date ? fmtDate(task.end_date) : ''}</td>
       <td style="padding:3px 8px;font-size:11px;border-bottom:1px solid #eee;text-align:center;">${task.duration || 0}</td>
       <td style="padding:3px 8px;font-size:11px;border-bottom:1px solid #eee;text-align:center;">${escHtml(task.owner || '')}</td>
-      <td style="padding:3px 8px;font-size:11px;border-bottom:1px solid #eee;text-align:center;">${escHtml(depsStr)}</td>
       <td style="padding:3px 8px;font-size:11px;border-bottom:1px solid #eee;text-align:center;">${task.progress || 0}%</td>
     </tr>`;
   }
@@ -1298,7 +1157,6 @@ async function exportToPdf() {
     <th style="text-align:left;">任务名称</th>
     <th style="width:80px;">开始</th><th style="width:80px;">结束</th>
     <th style="width:50px;">工期</th><th style="width:60px;">负责人</th>
-    <th style="width:80px;">前置任务</th>
     <th style="width:70px;">进度</th>
   </tr></thead><tbody>${tableRows}</tbody></table>
 </div>
@@ -1368,7 +1226,6 @@ function parseExcelDate(value) {
 
 // ===== Full Render =====
 function fullRender() {
-  recalcSchedule();
   // Save scroll positions before DOM rebuild
   const scrollEl = document.querySelector('.table-scroll');
   const ganttBody = document.getElementById('ganttBody');
@@ -1379,6 +1236,7 @@ function fullRender() {
   renderTableStructure();
   renderTable();
   renderGantt();
+  syncColumnWidths();
 
   // Restore scroll positions after re-render
   const newScroll = document.querySelector('.table-scroll');
@@ -1534,7 +1392,6 @@ function hideCtxMenu() {
 }
 
 function initCtxMenu() {
-  // Right-click on table rows
   document.addEventListener('contextmenu', (e) => {
     const tr = e.target.closest('#taskTable tbody tr');
     const ganttRow = e.target.closest('.gantt-row');
@@ -1544,11 +1401,9 @@ function initCtxMenu() {
       showCtxMenu(e, +ganttRow.dataset.taskId);
     }
   });
-  // Click outside hides menu
   document.addEventListener('click', (e) => {
     if (!e.target.closest('.ctx-menu')) hideCtxMenu();
   });
-  // Handle menu options
   document.querySelectorAll('.ctx-option').forEach(el => {
     el.onclick = () => {
       const action = el.dataset.action;
@@ -1558,7 +1413,6 @@ function initCtxMenu() {
       hideCtxMenu();
     };
   });
-  // Hide on Escape
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hideCtxMenu(); });
 }
 

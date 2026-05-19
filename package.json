@@ -1,0 +1,65 @@
+{
+  "name": "gantt-chart",
+  "version": "1.0.010",
+  "description": "横道图 - 工程项目进度管理软件",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder --mac dmg --config",
+    "build:dir": "electron-builder --mac dir --config"
+  },
+  "build": {
+    "appId": "com.ganttchart.app",
+    "productName": "横道图 Gantt",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer/**/*"
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "icon": "build/icon.png",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
+      "darkModeSupport": true
+    },
+    "dmg": {
+      "title": "横道图 Gantt",
+      "icon": "build/icon.png",
+      "iconSize": 128,
+      "contents": [
+        {
+          "x": 130,
+          "y": 220,
+          "type": "file"
+        },
+        {
+          "x": 410,
+          "y": 220,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ],
+      "window": {
+        "width": 540,
+        "height": 440
+      }
+    }
+  },
+  "devDependencies": {
+    "electron": "^27.3.11",
+    "electron-builder": "^25.0.0",
+    "exceljs": "^4.4.0",
+    "xlsx": "^0.18.5"
+  }
+}

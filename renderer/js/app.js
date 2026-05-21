@@ -3,7 +3,7 @@
    ============================================================ */
 
 // ===== Data =====
-const APP_VERSION = '1.0.009';
+const APP_VERSION = '1.0.010';
 let tasks = [];
 let nextId = 1;
 let zoomLevel = 'week';
@@ -13,6 +13,7 @@ const DAY_MS = 86400000;
 let columnWidths = { name: 200, start: 95, end: 95, duration: 55, owner: 60, plan: 130 };
 let colResizeState = null;
 let sortState = { key: null, asc: true };
+let showTodayLine = true;
 
 // ===== File Management =====
 let currentFilePath = null;
@@ -231,6 +232,7 @@ function serializeTasks() {
     version: 1,
     nextId,
     zoomLevel,
+    showTodayLine,
     columnWidths,
     tasks: tasks.map(t => ({
       ...t,
@@ -242,6 +244,7 @@ function serializeTasks() {
 function deserializeData(data) {
   nextId = data.nextId || 1;
   zoomLevel = data.zoomLevel || 'week';
+  showTodayLine = data.showTodayLine !== undefined ? data.showTodayLine : true;
   columnWidths = { name: 200, start: 95, end: 95, duration: 55, owner: 60, plan: 130, ...(data.columnWidths || {}) };
   tasks = (data.tasks || []).map(t => ({
     ...t,
@@ -689,6 +692,7 @@ function renderTimeline(units, totalWidth) {
 
 // ===== Render: Today Line =====
 function renderTodayLine(range, units, ppd, container) {
+  if (!showTodayLine) return;
   const today = new Date(); today.setHours(0, 0, 0, 0);
   if (today < range.start || today > addDays(range.end, 1)) return;
   const x = dateToPixel(today, range, units, ppd);
@@ -868,6 +872,15 @@ function setZoom(level) {
   fullRender();
 }
 
+function toggleTodayLine() {
+  showTodayLine = !showTodayLine;
+  const btn = document.getElementById('btnTodayLine');
+  if (btn) btn.classList.toggle('active', showTodayLine);
+  const names = { true: '今日线: 开', false: '今日线: 关' };
+  updateStatus(names[showTodayLine]);
+  fullRender();
+}
+
 // ===== Panel Resize =====
 function initResize() {
   const handle = document.getElementById('resizeHandle');
@@ -1029,24 +1042,26 @@ async function exportToExcel() {
   }
 
   // Today marker row
-  const today = new Date(); today.setHours(0, 0, 0, 0);
-  const tv = ['今天'];
-  let tCol = -1;
-  for (const u of units) {
-    const ue = unitEnd(u);
-    if (today >= u.date && today < ue) { tv.push('▼'); tCol = tv.length - 1; }
-    else tv.push('');
-  }
-  const tr = ws2.addRow(tv);
-  tr.height = 18;
-  const tnc = tr.getCell(1);
-  tnc.font = { bold: true, color: { argb: 'FFE74C3C' }, size: 9 };
-  tnc.alignment = { vertical: 'middle' };
-  if (tCol > 0) {
-    const mc = tr.getCell(1 + tCol);
-    mc.font = { bold: true, color: { argb: 'FFE74C3C' }, size: 10 };
-    mc.alignment = { horizontal: 'center', vertical: 'middle' };
-    mc.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF0F0' } };
+  if (showTodayLine) {
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const tv = ['今天'];
+    let tCol = -1;
+    for (const u of units) {
+      const ue = unitEnd(u);
+      if (today >= u.date && today < ue) { tv.push('▼'); tCol = tv.length - 1; }
+      else tv.push('');
+    }
+    const tr = ws2.addRow(tv);
+    tr.height = 18;
+    const tnc = tr.getCell(1);
+    tnc.font = { bold: true, color: { argb: 'FFE74C3C' }, size: 9 };
+    tnc.alignment = { vertical: 'middle' };
+    if (tCol > 0) {
+      const mc = tr.getCell(1 + tCol);
+      mc.font = { bold: true, color: { argb: 'FFE74C3C' }, size: 10 };
+      mc.alignment = { horizontal: 'center', vertical: 'middle' };
+      mc.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF0F0' } };
+    }
   }
 
   // Column widths
@@ -1119,7 +1134,7 @@ async function exportToPdf() {
   }
   // Today line
   let todayLineHTML = '';
-  if (today >= range.start && today <= addDays(range.end, 1)) {
+  if (showTodayLine && today >= range.start && today <= addDays(range.end, 1)) {
     const tx = dateToPixel(today, range, units, ppd);
     todayLineHTML = `<div style="position:absolute;top:0;left:${tx}px;width:2px;height:100%;background:#e74c3c;z-index:5;pointer-events:none;"></div>`;
   }
@@ -1255,6 +1270,9 @@ function fullRender() {
   const vs = document.getElementById("versionStatus");
   if (vs) vs.textContent = "v" + APP_VERSION;
   if (zs) zs.textContent = names[zoomLevel] || zoomLevel;
+  // Sync today line toggle button state
+  const tlBtn = document.getElementById('btnTodayLine');
+  if (tlBtn) tlBtn.classList.toggle('active', showTodayLine);
 }
 
 function updateStatus(msg) {
@@ -1335,6 +1353,7 @@ function initMenubar() {
     'zoom-week': () => { setZoom('week'); closeAllMenus(); },
     'zoom-month': () => { setZoom('month'); closeAllMenus(); },
     'about': () => { showAboutModal(); closeAllMenus(); },
+    'toggle-today-line': () => { toggleTodayLine(); closeAllMenus(); },
   };
 
   function closeAllMenus() {
@@ -1436,6 +1455,7 @@ function init() {
   document.getElementById('btnExport').onclick = exportToExcel;
   document.getElementById('btnExportPdf').onclick = exportToPdf;
   document.getElementById('btnImport').onclick = () => document.getElementById('fileInput').click();
+  document.getElementById('btnTodayLine').onclick = toggleTodayLine;
   document.getElementById('fileInput').onchange = (e) => { if (e.target.files.length) { importFromExcel(e.target.files[0]); e.target.value = ''; } };
 
   // Zoom buttons

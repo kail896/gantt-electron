@@ -74,6 +74,8 @@ button { cursor: pointer; border: none; background: none; }
 .tb-btn:active { background: var(--bg-selected); }
 .zoom-btn.active { background: var(--accent-blue); color: #fff; }
 .zoom-btn.active:hover { background: #3a7bc8; }
+.tb-toggle.active { background: var(--accent-blue); color: #fff; }
+.tb-toggle.active:hover { background: #3a7bc8; }
 .tb-sep { width: 1px; height: 20px; background: var(--border-light); margin: 0 4px; }
 
 /* ===== Main Content ===== */
